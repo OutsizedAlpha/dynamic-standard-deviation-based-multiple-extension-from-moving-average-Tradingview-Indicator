@@ -1,0 +1,20 @@
+# Editor and OS artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.bak
+*.tmp
+.vscode/
+.idea/
+
+# Python reference-test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Local data, cache and working files
+*.log
+*.csv
+*.parquet
