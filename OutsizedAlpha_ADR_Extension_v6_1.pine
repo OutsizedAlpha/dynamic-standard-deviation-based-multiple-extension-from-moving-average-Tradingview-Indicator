@@ -1,0 +1,278 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0.
+// https://mozilla.org/MPL/2.0/
+// © OutsizedAlpha
+//@version=6
+indicator("OutsizedAlpha ADR / MA Extension", shorttitle="OA ADR Extension", overlay=true)
+
+// ============================================================================
+// PURPOSE
+// Colour price candles when their distance from a moving average, normalised
+// by ADR (or ATR), is unusually large relative to PRIOR observations.
+// Rev 1.1: auto-register available history (minimum 21 preceding chart bars),
+// optionally use partial-length MA/range averages for young IPOs, and offer
+// all nine TradingView table anchors plus five table text sizes.
+// No plot() or hline() outputs: all controls are in Inputs, not legacy Styles.
+// ============================================================================
+
+// ── Price extension ─────────────────────────────────────────────────────────
+string calcGroup = "01 · Price Extension"
+int maLength = input.int(50, "Moving average length", minval=1, group=calcGroup)
+int rangeLength = input.int(14, "ADR / ATR length", minval=1, group=calcGroup)
+bool adaptiveAverages = input.bool(true, "IPO: use available bars until full MA / range lengths", group=calcGroup,
+     tooltip="Enabled: on a newly listed share, calculate the SMA / ADR from the available candles until the selected periods are reached. Early ATR uses the average true range observed so far, then the normal Wilder ATR. This lets the 21-prior-bar minimum work even with a 50-bar moving average. Early MA/ADR values are provisional shorter-period measures.")
+string rangeMethod = input.string("ADR (high − low)", "Range normaliser", options=["ADR (high − low)", "ATR (true range)"], group=calcGroup,
+     tooltip="ADR is the simple average of the candle high−low ranges. ATR uses Wilder's smoothed true range including gaps. On a daily chart, these are daily measures; on other chart timeframes they are per-bar measures.")
+
+// ── Historical comparison ────────────────────────────────────────────────────
+string statsGroup = "02 · Historical Statistics"
+string historyMode = input.string("Rolling", "Historical comparison", options=["Rolling", "Cumulative"], group=statsGroup,
+     tooltip="Rolling = preceding N chart bars, regardless of whether they were above or below the MA. Cumulative = all previously loaded valid bars. The current bar is excluded in both cases.")
+// The selected lookback is a TARGET, not the amount of history required.
+// At least 21 preceding chart candles are needed. As data accumulates, the
+// rolling sample automatically increases up to whatever target the user sets.
+int lookbackBars = input.int(252, "Rolling lookback (bars)", minval=21, maxval=50000, group=statsGroup, active=historyMode == "Rolling",
+     tooltip="Target lookback, not a fixed minimum. If the chart has fewer prior bars, use them all once 21 prior bars are available. The target may be 504, 756, 2,000 or longer (within this input's capacity). On a daily chart, 21 bars means 21 trading sessions.")
+int minimumSamples = input.int(2, "Minimum qualifying observations per side", minval=2, maxval=500, group=statsGroup,
+     tooltip="Number of valid positive or negative extensions required for that side's statistics; defaults to 2 for a defined standard deviation. The overall historical registration also needs 21 preceding chart bars. A trend with fewer than two observations on one side cannot estimate that side's SD.")
+
+// ── Threshold selection ──────────────────────────────────────────────────────
+string thresholdGroup = "03 · Candle Highlight Thresholds"
+string thresholdMethod = input.string("Standard deviation", "Threshold method", options=["Standard deviation", "Empirical percentile"], group=thresholdGroup,
+     tooltip="SD uses the mean + N population standard deviations of positive extensions (or absolute negative extensions). Percentile uses the exact nearest-rank percentile of those observations.")
+string upsideSD = input.string("+1 SD", "Upside: at least", options=["+1 SD", "+2 SD", "+3 SD"], group=thresholdGroup, active=thresholdMethod == "Standard deviation")
+string upsidePct = input.string("95th", "Upside percentile", options=["80th", "90th", "95th", "99th"], group=thresholdGroup, active=thresholdMethod == "Empirical percentile")
+bool enableDownside = input.bool(false, "Also colour extreme downside candles", group=thresholdGroup)
+string downsideSD = input.string("+1 SD", "Downside magnitude: at least", options=["+1 SD", "+2 SD", "+3 SD"], group=thresholdGroup, active=enableDownside and thresholdMethod == "Standard deviation")
+string downsidePct = input.string("95th", "Downside magnitude percentile", options=["80th", "90th", "95th", "99th"], group=thresholdGroup, active=enableDownside and thresholdMethod == "Empirical percentile")
+bool confirmedOnly = input.bool(true, "Colour only confirmed (closed) candles", group=thresholdGroup,
+     tooltip="On: no temporary intrabar highlights. Off: allow a provisional highlight on an unfinished candle; statistics are still updated only at bar close.")
+
+// ── Appearance ────────────────────────────────────────────────────────────────
+string visualGroup = "04 · Appearance"
+color upsideColour = input.color(color.rgb(41, 98, 255), "Upside extension candle", group=visualGroup)
+color downsideColour = input.color(color.rgb(255, 152, 0), "Downside extension candle", group=visualGroup, active=enableDownside)
+bool showTable = input.bool(false, "Show compact statistics table", group=visualGroup)
+// Two menus give all 3 × 3 TradingView anchors; tables cannot be dragged freely.
+string tableVertical = input.string("Top", "Table: vertical position", options=["Top", "Middle", "Bottom"], group=visualGroup, active=showTable)
+string tableHorizontal = input.string("Right", "Table: horizontal position", options=["Left", "Centre", "Right"], group=visualGroup, active=showTable)
+string tableTextSizeInput = input.string("Tiny", "Table: text size", options=["Tiny", "Small", "Standard", "Large", "Extra large"], group=visualGroup, active=showTable)
+
+// ── Sorted-array helpers for exact nearest-rank percentiles ──────────────────
+// Sorted arrays avoid re-sorting the full history on every candle.
+f_lowerBound(array<float> xs, float value) =>
+    int lo = 0
+    int hi = array.size(xs)
+    while lo < hi
+        int mid = int(math.floor((lo + hi) / 2))
+        if array.get(xs, mid) < value
+            lo := mid + 1
+        else
+            hi := mid
+    lo
+
+f_sortedAdd(array<float> xs, float value) =>
+    int index = f_lowerBound(xs, value)
+    array.insert(xs, index, value)
+    index
+
+f_sortedRemove(array<float> xs, float value) =>
+    int index = f_lowerBound(xs, value)
+    bool found = index < array.size(xs) and array.get(xs, index) == value
+    if found
+        array.remove(xs, index)
+    found
+
+f_percentile(array<float> xs, int percentile) =>
+    int n = array.size(xs)
+    float value = na
+    if n > 0
+        int index = math.max(0, math.min(n - 1, int(math.ceil(n * percentile / 100.0)) - 1))
+        value := array.get(xs, index)
+    value
+
+f_sdMultiplier(string selection) =>
+    selection == "+3 SD" ? 3.0 : selection == "+2 SD" ? 2.0 : 1.0
+
+f_pctNumber(string selection) =>
+    selection == "99th" ? 99 : selection == "95th" ? 95 : selection == "90th" ? 90 : 80
+
+// ── Normalised extension: standard price distance / average range ────────────
+// Normal calculations preserve the original SMA and Wilder ATR methods.
+// Before their full lengths are available, young IPOs can use the averages
+// of whatever candles are available; the first complete ATR is seeded by SMA.
+float fullMovingAverage = ta.sma(close, maLength)
+float fullDailyRange = ta.sma(high - low, rangeLength)
+float fullTrueRange = ta.atr(rangeLength)
+float intrabarTrueRange = ta.tr(true)
+// Evaluate the cumulative functions on EVERY candle, not only in a branch.
+float cumulativeCloses = ta.cum(close)
+float cumulativeRanges = ta.cum(high - low)
+float cumulativeTrueRanges = ta.cum(intrabarTrueRange)
+float availableBars = float(bar_index + 1)
+float movingAverage = adaptiveAverages and bar_index + 1 < maLength ? cumulativeCloses / availableBars : fullMovingAverage
+float averageDailyRange = adaptiveAverages and bar_index + 1 < rangeLength ? cumulativeRanges / availableBars : fullDailyRange
+float averageTrueRange = adaptiveAverages and bar_index + 1 < rangeLength ? cumulativeTrueRanges / availableBars : fullTrueRange
+float normaliser = rangeMethod == "ATR (true range)" ? averageTrueRange : averageDailyRange
+float multiple = not na(movingAverage) and not na(normaliser) and normaliser > 0 ? (close - movingAverage) / normaliser : na
+
+// ── Prior-bar statistics (positive and negative calculated separately) ──────
+// Negative extensions are represented by their positive magnitude (−multiple).
+var float upLocation = 0.0
+var float upM2 = 0.0
+var int upN = 0
+var float downLocation = 0.0
+var float downM2 = 0.0
+var int downN = 0
+var array<float> window = array.new_float(0)
+var array<float> upSorted = array.new_float(0)
+var array<float> downSorted = array.new_float(0)
+
+bool useRolling = historyMode == "Rolling"
+bool usePercentiles = thresholdMethod == "Empirical percentile"
+// The array holds prior bars (including na and zero values), so this measures
+// the actual number registered in the selected history, not positive samples.
+// With a target of e.g. 1,000 and only 45 bars available, use those 45 bars.
+int priorHistoryBars = useRolling ? array.size(window) : bar_index
+int minimumPriorBars = 21
+bool registered = priorHistoryBars >= minimumPriorBars
+
+// IMPORTANT: thresholds are computed BEFORE the current bar enters the sample.
+int priorUpN = upN
+int priorDownN = downN
+float upMean = upN > 0 ? upLocation : na
+float downMean = downN > 0 ? downLocation : na
+// Welford population variance, which is more stable than E[x²] − E[x]².
+float upVariance = upN > 1 ? math.max(0.0, upM2 / upN) : na
+float downVariance = downN > 1 ? math.max(0.0, downM2 / downN) : na
+float upSDValue = na(upVariance) ? na : upVariance <= 1e-12 * math.max(1.0, upLocation * upLocation) ? 0.0 : math.sqrt(upVariance)
+float downSDValue = na(downVariance) ? na : downVariance <= 1e-12 * math.max(1.0, downLocation * downLocation) ? 0.0 : math.sqrt(downVariance)
+
+// 21 PRIOR chart bars is the registration gate, independent of the target
+// lookback. Each distribution still needs enough values to define its SD.
+bool upReady = registered and upN >= minimumSamples
+bool downReady = registered and downN >= minimumSamples
+float upThreshold = na
+float downThreshold = na
+if upReady
+    upThreshold := usePercentiles ? f_percentile(upSorted, f_pctNumber(upsidePct)) : upMean + f_sdMultiplier(upsideSD) * upSDValue
+if downReady
+    downThreshold := usePercentiles ? f_percentile(downSorted, f_pctNumber(downsidePct)) : downMean + f_sdMultiplier(downsideSD) * downSDValue
+
+bool colourThisBar = not confirmedOnly or barstate.isconfirmed
+bool upsideExtreme = colourThisBar and not na(multiple) and multiple > 0 and not na(upThreshold) and multiple >= upThreshold
+bool downsideExtreme = colourThisBar and enableDownside and not na(multiple) and multiple < 0 and not na(downThreshold) and -multiple >= downThreshold
+
+// Only barcolour is drawn. 'editable=false' keeps its appearance under Inputs.
+barcolor(upsideExtreme ? upsideColour : downsideExtreme ? downsideColour : na, title="ADR/MA extension highlights", editable=false)
+
+// ── Historical update after signal calculation (no future/current leakage) ───
+// A rolling window stores ALL bars, including zero and na; this makes the
+// comparison precisely the preceding 'lookbackBars' chart candles, not the
+// preceding 'lookbackBars' *positive* candles.
+if barstate.isconfirmed
+    if useRolling
+        if array.size(window) >= lookbackBars
+            float expired = array.shift(window)
+            if not na(expired)
+                if expired > 0
+                    int newUpN = upN - 1
+                    if newUpN == 0
+                        upN := 0
+                        upLocation := 0.0
+                        upM2 := 0.0
+                    else
+                        float newUpMean = (upLocation * upN - expired) / newUpN
+                        upM2 := math.max(0.0, upM2 - (expired - upLocation) * (expired - newUpMean))
+                        upLocation := newUpMean
+                        upN := newUpN
+                    if usePercentiles
+                        f_sortedRemove(upSorted, expired)
+                else if expired < 0
+                    float oldMagnitude = -expired
+                    int newDownN = downN - 1
+                    if newDownN == 0
+                        downN := 0
+                        downLocation := 0.0
+                        downM2 := 0.0
+                    else
+                        float newDownMean = (downLocation * downN - oldMagnitude) / newDownN
+                        downM2 := math.max(0.0, downM2 - (oldMagnitude - downLocation) * (oldMagnitude - newDownMean))
+                        downLocation := newDownMean
+                        downN := newDownN
+                    if usePercentiles
+                        f_sortedRemove(downSorted, oldMagnitude)
+        array.push(window, multiple)
+
+    if not na(multiple)
+        if multiple > 0
+            upN += 1
+            float upDelta = multiple - upLocation
+            upLocation += upDelta / upN
+            upM2 += upDelta * (multiple - upLocation)
+            if usePercentiles
+                f_sortedAdd(upSorted, multiple)
+        else if multiple < 0
+            float magnitude = -multiple
+            downN += 1
+            float downDelta = magnitude - downLocation
+            downLocation += downDelta / downN
+            downM2 += downDelta * (magnitude - downLocation)
+            if usePercentiles
+                f_sortedAdd(downSorted, magnitude)
+
+// ── Optional compact table, without plots or additional price scaling ────────
+// Inputs reinitialise the script, so the table automatically moves/resizes.
+string tablePosition = switch tableVertical + " / " + tableHorizontal
+    "Top / Left"       => position.top_left
+    "Top / Centre"     => position.top_center
+    "Top / Right"      => position.top_right
+    "Middle / Left"    => position.middle_left
+    "Middle / Centre"  => position.middle_center
+    "Middle / Right"   => position.middle_right
+    "Bottom / Left"    => position.bottom_left
+    "Bottom / Centre"  => position.bottom_center
+    "Bottom / Right"   => position.bottom_right
+    => position.top_right
+string tableTextSize = switch tableTextSizeInput
+    "Tiny"        => size.tiny
+    "Small"       => size.small
+    "Standard"    => size.normal
+    "Large"       => size.large
+    "Extra large" => size.huge
+    => size.tiny
+var table info = table.new(tablePosition, 2, 9, bgcolor=color.new(color.black, 12), frame_color=color.new(color.gray, 65), frame_width=1)
+if showTable and barstate.islast
+    string selectionUp = usePercentiles ? upsidePct : upsideSD
+    string selectionDown = usePercentiles ? downsidePct : downsideSD
+    string methodLabel = rangeMethod == "ATR (true range)" ? "ATR" : "ADR"
+    int activeMALength = adaptiveAverages ? math.min(bar_index + 1, maLength) : maLength
+    int activeRangeLength = adaptiveAverages ? math.min(bar_index + 1, rangeLength) : rangeLength
+    string averageSummary = "SMA " + str.tostring(activeMALength) + " / " + methodLabel + " " + str.tostring(activeRangeLength)
+    string desiredWindow = useRolling ? str.tostring(lookbackBars) + " bars" : "Cumulative"
+    string registeredWindow = useRolling ? str.tostring(priorHistoryBars) + " / " + str.tostring(lookbackBars) + " bars" : str.tostring(priorHistoryBars) + " prior bars"
+    bool anySideReady = upReady or (enableDownside and downReady)
+    string stateLabel = not registered ? "Collecting bars (" + str.tostring(priorHistoryBars) + "/21)" : upsideExtreme ? "UPSIDE EXTENDED" : downsideExtreme ? "DOWNSIDE EXTENDED" : confirmedOnly and not barstate.isconfirmed ? "Awaiting close" : na(multiple) ? "Awaiting price/range" : not anySideReady ? "Awaiting samples" : "Normal"
+    table.cell(info, 0, 0, "OA ADR EXTENSION", text_color=color.white, text_size=tableTextSize, bgcolor=color.new(color.blue, 60))
+    table.cell(info, 1, 0, stateLabel, text_color=color.white, text_size=tableTextSize, bgcolor=color.new(color.blue, 60))
+    table.cell(info, 0, 1, "Current multiple", text_color=color.white, text_size=tableTextSize)
+    table.cell(info, 1, 1, na(multiple) ? "—" : str.tostring(multiple, "#.##") + "×", text_color=color.white, text_size=tableTextSize)
+    table.cell(info, 0, 2, "MA / range in use", text_color=color.white, text_size=tableTextSize)
+    table.cell(info, 1, 2, averageSummary, text_color=color.white, text_size=tableTextSize)
+    table.cell(info, 0, 3, "Lookback setting", text_color=color.white, text_size=tableTextSize)
+    table.cell(info, 1, 3, desiredWindow, text_color=color.white, text_size=tableTextSize)
+    table.cell(info, 0, 4, "Registered prior bars", text_color=registered ? color.lime : color.orange, text_size=tableTextSize)
+    table.cell(info, 1, 4, registeredWindow, text_color=color.white, text_size=tableTextSize)
+    table.cell(info, 0, 5, "Upside " + selectionUp, text_color=upsideColour, text_size=tableTextSize)
+    table.cell(info, 1, 5, na(upThreshold) ? "Awaiting sample" : str.tostring(upThreshold, "#.##") + "×", text_color=color.white, text_size=tableTextSize)
+    table.cell(info, 0, 6, "Upside observations", text_color=color.white, text_size=tableTextSize)
+    table.cell(info, 1, 6, str.tostring(priorUpN), text_color=color.white, text_size=tableTextSize)
+    table.cell(info, 0, 7, "Downside " + selectionDown, text_color=downsideColour, text_size=tableTextSize)
+    table.cell(info, 1, 7, enableDownside ? na(downThreshold) ? "Awaiting sample" : str.tostring(downThreshold, "#.##") + "×" : "Off", text_color=color.white, text_size=tableTextSize)
+    table.cell(info, 0, 8, "Downside observations", text_color=color.white, text_size=tableTextSize)
+    table.cell(info, 1, 8, str.tostring(priorDownN), text_color=color.white, text_size=tableTextSize)
+
+// ── Alerts ───────────────────────────────────────────────────────────────────
+alertcondition(upsideExtreme, title="ADR upside extension — qualifying bar", message="{{ticker}} {{interval}}: ADR/MA upside extension meets configured threshold. Close {{close}}")
+alertcondition(upsideExtreme and not upsideExtreme[1], title="ADR upside extension — first qualifying bar", message="{{ticker}} {{interval}}: Entered ADR/MA upside-extension condition. Close {{close}}")
+alertcondition(downsideExtreme, title="ADR downside extension — qualifying bar", message="{{ticker}} {{interval}}: ADR/MA downside extension meets configured threshold. Close {{close}}")
+alertcondition(downsideExtreme and not downsideExtreme[1], title="ADR downside extension — first qualifying bar", message="{{ticker}} {{interval}}: Entered ADR/MA downside-extension condition. Close {{close}}")
