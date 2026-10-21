@@ -1,0 +1,1 @@
+# dynamic-standard-deviation-based-multiple-extension-from-moving-average
