@@ -1,5 +1,14 @@
 # Changelog
 
+## v6.2 — 22 October 2026 (tested update)
+
+- Added an empirical **current-extension directional percentile** alongside the multiple in the optional table, e.g. `1.64× (P63.4)`.
+- Ranks positive extensions against preceding **positive** observations; negative extensions are ranked by **absolute magnitude** against preceding negative observations.
+- Uses the selected rolling or cumulative prior-bar comparison window, excludes the current bar, and applies midpoint ranking to exact ties.
+- Maintains sorted comparison data in either **standard-deviation** or **empirical-percentile** highlight mode.
+- Leaves the 21-prior-bar registration rule, MA/ADR/ATR calculations, highlight thresholds, colour settings and alert conditions unchanged.
+- User confirmed the v6.2 indicator working correctly in TradingView. This report does not independently certify every market/timeframe.
+
 ## v6.1 — 21 October 2026 (initial public release)
 
 - Released the **OutsizedAlpha ADR / MA Extension** Pine Script® v6 indicator.
