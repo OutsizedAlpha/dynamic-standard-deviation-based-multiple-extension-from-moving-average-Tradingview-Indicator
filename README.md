@@ -4,14 +4,14 @@
 
 Colour candles when the share price is unusually far above (or optionally below) its moving average **relative to its own typical candle range and historical extension distribution**. Compare against **+1, +2 or +3 standard deviations**, or empirical **80th, 90th, 95th or 99th percentiles**. An optional compact statistics table can occupy any of TradingView's nine table anchors.
 
-[**Pine source**](./OutsizedAlpha_ADR_Extension_v6_1.pine) · [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Licence](./LICENSE) · [Reference tests](./tests/test_reference_statistics.py)
+[**Pine source**](./OutsizedAlpha_ADR_Extension_v6_2.pine) · [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Licence](./LICENSE) · [Reference tests](./tests/test_reference_statistics.py)
 
 > **Standalone research indicator.** This project is separate from the [OutsizedAlpha DeMARK indicator](https://github.com/OutsizedAlpha/DeMark-S-C-Tradingview-Indicator). Price extension is not itself evidence of a likely reversal or a trading recommendation.
 
 ## Quick installation
 
 1. Open a chart in [TradingView](https://www.tradingview.com/).
-2. Open **Pine Editor**, create a new indicator and copy the entire [`OutsizedAlpha_ADR_Extension_v6_1.pine` source](./OutsizedAlpha_ADR_Extension_v6_1.pine).
+2. Open **Pine Editor**, create a new indicator and copy the entire [`OutsizedAlpha_ADR_Extension_v6_2.pine` source](./OutsizedAlpha_ADR_Extension_v6_2.pine).
 3. Save the script and choose **Add to chart**.
 4. Open **Settings → Inputs** to select your preferred historical comparison, threshold, colours and table position.
 5. Start with a standard **daily OHLC** chart for daily-range interpretation.
@@ -53,6 +53,19 @@ The mean and SD are calculated using a numerically stable incremental Welford ca
 Alternatively, the indicator uses an **exact nearest-rank empirical percentile** of that direction's qualifying observations. For example, the 95th-percentile setting uses the sorted observed values, not a Gaussian approximation.
 
 A high reading can signal **strong trend momentum**, **extended price action**, or both. It is not necessarily an overbought sell signal. Rising volatility can reduce an ADR multiple even if price continues rising.
+
+## Current multiple: historical percentile rank (v6.2)
+
+The statistics table displays a **directional empirical percentile** immediately beside the current extension multiple, for example **`1.64× (P63.4)`**. The actual percentile depends on the current chart data and selected history.
+
+- For a **positive** multiple, rank its magnitude against **prior positive ADR/MA multiples** only.
+- For a **negative** multiple, rank the absolute magnitude against **prior negative ADR/MA extension magnitudes** only.
+- The comparison uses the same **preceding rolling or cumulative history** already selected for the indicator; the current bar is excluded from its own reference sample.
+- Percentile rank is **`100 × (count below current + half of exact ties) / qualifying sample count`**. It can range from P0 to P100; P63.4 means the current same-direction magnitude ranks around the 63.4th percentile of that historical population.
+- The rank works with **both** SD-based candle highlights and empirical-percentile candle highlights. The rank is an *informational readout* and **does not alter candle colours, thresholds or alerts**.
+- If there are fewer than **21 preceding chart bars**, too few same-direction observations, an unavailable multiple, or exactly zero extension, no rank is shown. The existing minimum qualifying-observation setting applies.
+
+**This is not a percentile of all 756 bars when only 417 of them have positive extensions.** Nor is P90 a probability of a future price reversal.
 
 ## Automatic historical registration (especially for IPOs)
 
