@@ -12,10 +12,10 @@ Avoid uploading trading credentials, personal portfolio details or other non-pub
 
 ## Proposing a change
 
-1. Keep the canonical script in `OutsizedAlpha_ADR_Extension_v6_1.pine` unless renaming is an explicit part of the change.
+1. Keep the canonical script in `OutsizedAlpha_ADR_Extension_v6_2.pine` unless renaming is an explicit part of the change.
 2. Preserve the source copyright and **MPL-2.0** notice.
 3. Explain the statistical effect and whether the change is **calculation**, **signal**, **presentation** or **performance** related.
-4. Avoid allowing the current candle into its own historical reference distribution.
+4. Avoid allowing the current candle into its own historical reference distribution. This applies to both threshold calculations **and** the v6.2 directional percentile rank; preserve fair midpoint treatment of tied historical observations.
 5. Check **21-prior-bar registration**, partial histories with large user-selected lookbacks, strictly positive/negative sample separation, minimum qualifying samples, constant-series SD, rolling eviction, percentile nearest-rank, candle colour, and table positions.
 6. Run `python -m unittest discover -s tests -v`. This checks an **independent reference calculation**, not the Pine runtime.
 7. Test the candidate script in TradingView's native Pine Editor and report whether compilation and visual/alert checks succeeded. A secondary language runtime cannot certify native Pine compatibility.
